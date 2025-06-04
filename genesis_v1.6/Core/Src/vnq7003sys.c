@@ -1,4 +1,4 @@
-// vnq7003.c - Unified VNQ7003SY Driver Implementation
+// vnq7003.c - Unified VNQ7003SY Driver Implementation - FIXED VERSION
 #include "vnq7003sys.h"
 #include "vnq7003sys_regs.h"
 #include "main.h"
@@ -95,28 +95,62 @@ static bool vnq_read_reg(uint8_t addr, uint8_t *data, uint8_t *gsb)
     return false;
 }
 
+// Enhanced VNQ7003 initialization with comprehensive debugging
 static bool vnq_enter_normal_mode(void)
 {
     uint8_t ctrl_reg, gsb;
+    uint8_t device_id, family, version;
 
-    printf("VNQ7003: Entering Normal mode sequence...\r\n");
+    printf("VNQ7003: Enhanced Normal mode entry with diagnostics...\r\n");
 
-    // Step 1: Read current CTRL register
+    // Step 0: Check device identification first
+    printf("VNQ7003: Reading device identification...\r\n");
+    if (vnq_read_reg(VNQ7003_REG_COMPANY_CODE, &device_id, &gsb)) {
+        printf("VNQ7003: Company Code: 0x%02X (expected: 0x00)\r\n", device_id);
+    }
+    if (vnq_read_reg(VNQ7003_REG_DEVICE_FAMILY, &family, &gsb)) {
+        printf("VNQ7003: Device Family: 0x%02X (expected: 0x01)\r\n", family);
+    }
+    if (vnq_read_reg(VNQ7003_REG_VERSION, &version, &gsb)) {
+        printf("VNQ7003: Version: 0x%02X\r\n", version);
+    }
+
+    // Step 1: Try software reset first
+    printf("VNQ7003: Attempting software reset...\r\n");
+    vnq_write_reg(VNQ7003_REG_CTLR, VNQ7003_CMD_SWRESET);
+    HAL_Delay(100);  // Wait for reset to complete
+
+    // Step 2: Read initial state after reset
     if (!vnq_read_reg(VNQ7003_REG_CTLR, &ctrl_reg, &gsb)) {
         printf("VNQ7003: Failed to read CTRL register\r\n");
         return false;
     }
-    printf("VNQ7003: Initial CTRL=0x%02X, GSB=0x%02X\r\n", ctrl_reg, gsb);
+    printf("VNQ7003: After reset - CTRL=0x%02X, GSB=0x%02X\r\n", ctrl_reg, gsb);
 
-    // Step 2: Clear any previous state and set UNLOCK
-    printf("VNQ7003: Setting UNLOCK bit...\r\n");
-    if (!vnq_write_reg(VNQ7003_REG_CTLR, VNQ7003_CTLR_UNLOCK)) {
-        printf("VNQ7003: Failed to set UNLOCK bit\r\n");
+    // Step 3: Check VCC voltage issue
+    if (gsb & 0x80) {
+        printf("VNQ7003: CRITICAL - Undervoltage detected! GSB=0x%02X\r\n", gsb);
+        printf("VNQ7003: VCC must be 8-28V. Current voltage appears too low.\r\n");
+        printf("VNQ7003: Check power supply to VNQ7003 VCC pin!\r\n");
+        // Continue anyway to see if we can get more info
+    }
+
+    // Step 4: Check if device is in fail-safe mode
+    if (gsb & 0x01) {
+        printf("VNQ7003: Device is in FAIL-SAFE mode! GSB=0x%02X\r\n", gsb);
+        printf("VNQ7003: This may prevent Normal mode entry.\r\n");
+    }
+
+    // Step 5: Try different approach - set thermal detection threshold first
+    printf("VNQ7003: Setting thermal threshold to 120°C and UNLOCK...\r\n");
+    uint8_t ctrl_with_thermal = VNQ7003_CTLR_UNLOCK;  // 120°C = 00b for CTDTH bits
+    if (!vnq_write_reg(VNQ7003_REG_CTLR, ctrl_with_thermal)) {
+        printf("VNQ7003: Failed to set UNLOCK with thermal config\r\n");
         return false;
     }
-    HAL_Delay(10);
+    HAL_Delay(50);
 
-    // Step 3: Read back to verify UNLOCK was set
+    // Step 6: Verify UNLOCK was set
     if (!vnq_read_reg(VNQ7003_REG_CTLR, &ctrl_reg, &gsb)) {
         printf("VNQ7003: Failed to read CTRL after UNLOCK\r\n");
         return false;
@@ -128,46 +162,154 @@ static bool vnq_enter_normal_mode(void)
         return false;
     }
 
-    // Step 4: Set EN bit (enter Normal mode) and clear GOSTBY
-    printf("VNQ7003: Setting EN bit (enter Normal mode)...\r\n");
-    if (!vnq_write_reg(VNQ7003_REG_CTLR, VNQ7003_CTLR_EN)) {
-        printf("VNQ7003: Failed to set EN bit\r\n");
+    // Step 7: Now try to set EN bit with longer delay
+    printf("VNQ7003: Setting EN bit (Normal mode) with extended delay...\r\n");
+    uint8_t normal_mode_value = VNQ7003_CTLR_UNLOCK | VNQ7003_CTLR_EN;  // 0x11
+    if (!vnq_write_reg(VNQ7003_REG_CTLR, normal_mode_value)) {
+        printf("VNQ7003: Failed to write EN bit\r\n");
         return false;
     }
-    HAL_Delay(50);  // Longer delay for mode transition
+    HAL_Delay(200);  // Much longer delay for mode transition
 
-    // Step 5: Verify Normal mode was entered
+    // Step 8: Check result
     if (!vnq_read_reg(VNQ7003_REG_CTLR, &ctrl_reg, &gsb)) {
         printf("VNQ7003: Failed to read CTRL after EN\r\n");
         return false;
     }
-    printf("VNQ7003: After EN: CTRL=0x%02X, GSB=0x%02X\r\n", ctrl_reg, gsb);
+    printf("VNQ7003: After EN attempt: CTRL=0x%02X, GSB=0x%02X\r\n", ctrl_reg, gsb);
 
-    // Check if EN bit is set and GOSTBY is clear
+    // Step 9: Detailed bit analysis
+    printf("VNQ7003: Bit analysis - EN=%d, UNLOCK=%d, GOSTBY=%d\r\n",
+           (ctrl_reg & VNQ7003_CTLR_EN) ? 1 : 0,
+           (ctrl_reg & VNQ7003_CTLR_UNLOCK) ? 1 : 0,
+           (ctrl_reg & VNQ7003_CTLR_GOSTBY) ? 1 : 0);
+
+    // Step 10: If EN still not set, try alternative approach
     if (!(ctrl_reg & VNQ7003_CTLR_EN)) {
-        printf("VNQ7003: EN bit not set! CTRL=0x%02X\r\n", ctrl_reg);
+        printf("VNQ7003: EN bit still not set. Trying alternative sequence...\r\n");
+
+        // Clear everything first
+        vnq_write_reg(VNQ7003_REG_CTLR, 0x00);
+        HAL_Delay(50);
+
+        // Set UNLOCK only
+        vnq_write_reg(VNQ7003_REG_CTLR, VNQ7003_CTLR_UNLOCK);
+        HAL_Delay(100);
+
+        // Now set EN without clearing UNLOCK (different order)
+        uint8_t current_ctrl;
+        vnq_read_reg(VNQ7003_REG_CTLR, &current_ctrl, &gsb);
+        current_ctrl |= VNQ7003_CTLR_EN;
+        vnq_write_reg(VNQ7003_REG_CTLR, current_ctrl);
+        HAL_Delay(200);
+
+        // Final check
+        vnq_read_reg(VNQ7003_REG_CTLR, &ctrl_reg, &gsb);
+        printf("VNQ7003: Alternative approach result: CTRL=0x%02X, GSB=0x%02X\r\n", ctrl_reg, gsb);
+    }
+
+    // Step 11: Final validation
+    if (!(ctrl_reg & VNQ7003_CTLR_EN)) {
+        printf("VNQ7003: FAILED - EN bit never set. Possible causes:\r\n");
+        printf("  1. VCC voltage too low (check power supply)\r\n");
+        printf("  2. Device hardware fault\r\n");
+        printf("  3. Watchdog expired (device in fail-safe)\r\n");
+        printf("  4. Overtemperature protection active\r\n");
+
+        // Try to read diagnostic info
+        uint8_t gensr;
+        if (vnq_read_reg(VNQ7003_REG_GENSR, &gensr, &gsb)) {
+            printf("VNQ7003: GENSR=0x%02X (VCCUV=%d, RST=%d, SPIE=%d)\r\n",
+                   gensr,
+                   (gensr & VNQ7003_GENSR_VCCUV) ? 1 : 0,
+                   (gensr & VNQ7003_GENSR_RST) ? 1 : 0,
+                   (gensr & VNQ7003_GENSR_SPIE) ? 1 : 0);
+        }
+
         return false;
     }
 
+    // Step 12: Check for other issues
     if (ctrl_reg & VNQ7003_CTLR_GOSTBY) {
-        printf("VNQ7003: Still in GOSTBY mode! CTRL=0x%02X\r\n", ctrl_reg);
-        return false;
+        printf("VNQ7003: WARNING - GOSTBY bit still set! CTRL=0x%02X\r\n", ctrl_reg);
     }
 
-    // Step 6: Check GSB for fail-safe or undervoltage
     if (gsb & 0x01) {
-        printf("VNQ7003: Device in fail-safe mode! GSB=0x%02X\r\n", gsb);
+        printf("VNQ7003: WARNING - Still in fail-safe mode! GSB=0x%02X\r\n", gsb);
         return false;
     }
 
-    if (gsb & 0x80) {
-        printf("VNQ7003: WARNING - Undervoltage detected! GSB=0x%02X\r\n", gsb);
-        printf("VNQ7003: Check VCC supply voltage (should be 8-28V)\r\n");
-        // Continue anyway - this might be a supply issue, not a communication issue
+    printf("VNQ7003: SUCCESS - Normal mode entered! CTRL=0x%02X\r\n", ctrl_reg);
+    return true;
+}
+
+// Additional diagnostic function
+void vnq_comprehensive_diagnosis(void)
+{
+    uint8_t data, gsb;
+
+    printf("\r\n=== VNQ7003 Comprehensive Diagnosis ===\r\n");
+
+    // Read all important registers
+    if (vnq_read_reg(VNQ7003_REG_CTLR, &data, &gsb)) {
+        printf("CTRL (0x00): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
     }
 
-    printf("VNQ7003: Successfully entered Normal mode\r\n");
-    return true;
+    if (vnq_read_reg(VNQ7003_REG_GENSR, &data, &gsb)) {
+        printf("GENSR (0x34): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
+        if (data & VNQ7003_GENSR_VCCUV) printf("  - VCC Undervoltage detected!\r\n");
+        if (data & VNQ7003_GENSR_RST) printf("  - Reset event occurred\r\n");
+        if (data & VNQ7003_GENSR_SPIE) printf("  - SPI error detected\r\n");
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_CONFIG, &data, &gsb)) {
+        printf("CONFIG (0x3F): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
+    }
+
+    // Try to read device ID
+    if (vnq_read_reg(VNQ7003_REG_COMPANY_CODE, &data, &gsb)) {
+        printf("Company Code: 0x%02X (should be 0x00)\r\n", data);
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_DEVICE_FAMILY, &data, &gsb)) {
+        printf("Device Family: 0x%02X (should be 0x01)\r\n", data);
+    }
+
+    printf("========================================\r\n\r\n");
+}
+
+void vnq_comprehensive_diagnosis(void)
+{
+    uint8_t data, gsb;
+
+    printf("\r\n=== VNQ7003 Comprehensive Diagnosis ===\r\n");
+
+    // Read all important registers
+    if (vnq_read_reg(VNQ7003_REG_CTLR, &data, &gsb)) {
+        printf("CTRL (0x00): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_GENSR, &data, &gsb)) {
+        printf("GENSR (0x34): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
+        if (data & VNQ7003_GENSR_VCCUV) printf("  - VCC Undervoltage detected!\r\n");
+        if (data & VNQ7003_GENSR_RST) printf("  - Reset event occurred\r\n");
+        if (data & VNQ7003_GENSR_SPIE) printf("  - SPI error detected\r\n");
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_CONFIG, &data, &gsb)) {
+        printf("CONFIG (0x3F): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
+    }
+
+    // Try to read device ID
+    if (vnq_read_reg(VNQ7003_REG_COMPANY_CODE, &data, &gsb)) {
+        printf("Company Code: 0x%02X (should be 0x00)\r\n", data);
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_DEVICE_FAMILY, &data, &gsb)) {
+        printf("Device Family: 0x%02X (should be 0x01)\r\n", data);
+    }
+
+    printf("========================================\r\n\r\n");
 }
 
 static bool vnq_service_watchdog(void)

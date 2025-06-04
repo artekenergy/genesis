@@ -1,22 +1,12 @@
 /**
- * @file    vnq7003_regs.h
+ * @file    vnq7003sys_regs.h
  * @brief   Register map and bit‐field definitions for the VNQ7003SY quad‐channel high‐side driver.
  *
  * All register addresses and bit masks are taken from the VNQ7003SY datasheet (DS11059 Rev 8, Dec 2018).
  * This header defines every RAM and ROM register address the MCU might read or write over SPI, plus
  * the associated bit‐mask constants for each field.
  *
- * Usage:
- *   #include "vnq7003_regs.h"
- *
- *   // Example: read the Control Register (CTLR), then set the “Go to Standby” bit:
- *   uint8_t ctlr = VNQ7003_ReadReg(VNQ7003_REG_CTLR);
- *   ctlr |= VNQ7003_CTLR_GOSTBY;
- *   VNQ7003_WriteReg(VNQ7003_REG_CTLR, ctlr);
- *
- * Note: All addresses and bit positions are as documented in:
- *       Section 4.3 “Register map” (pp. 33–35) and Section 4.6 “Control registers” (pp. 40–44) of
- *       VNQ7003SY datasheet DS11059 Rev 8 (December 2018) .
+ * FIXED VERSION - Corrected bit definitions for Normal mode entry
  */
 
 #ifndef VNQ7003_REGS_H
@@ -32,17 +22,19 @@ extern "C" {
 
 /* 0x00: Control Register (CTLR) – device enable, standby, protected init            */
 #define VNQ7003_REG_CTLR           0x00U
-/* CTLR Bits:
- *   Bit 7: – (Reserved)
- *   Bit 6: – (Reserved)
- *   Bit 5: GOSTBY – “Go to Standby”
+/* CTLR Bits (FIXED):
+ *   Bit 7-6: – (Reserved)
+ *   Bit 5: GOSTBY – "Go to Standby" (1 = enter Standby mode, requires UNLOCK=1)
  *   Bit 4: UNLOCK – unlock bit (must be set before setting GOSTBY or EN)
- *   Bits 3–0: – (Reserved)
+ *   Bit 3-2: CTDTH1, CTDTH0 – Case Thermal Detection Threshold bits
+ *   Bit 1: CTDTH0 – Case Thermal Detection Threshold bit 0
+ *   Bit 0: EN – Enable bit (1 = Normal mode, 0 = Fail Safe mode)
  */
 #define VNQ7003_CTLR_GOSTBY        (1U << 5)    /* 1 = enter Standby mode (requires UNLOCK=1) */
 #define VNQ7003_CTLR_UNLOCK        (1U << 4)    /* 1 = unlock bit (must precede GOSTBY or EN) */
-#define VNQ7003_CTLR_EN            (1U << 0)   /* Enable bit (Normal mode) */
-
+#define VNQ7003_CTLR_CTDTH1        (1U << 2)    /* Case thermal detection threshold bit 1 */
+#define VNQ7003_CTLR_CTDTH0        (1U << 1)    /* Case thermal detection threshold bit 0 */
+#define VNQ7003_CTLR_EN            (1U << 0)    /* 1 = Normal mode, 0 = Fail Safe mode */
 
 /* 0x01: Direct Input Enable Control Register (DIENCR) – enable DIₓ pins for each channel */
 #define VNQ7003_REG_DIENCR         0x01U
@@ -98,12 +90,12 @@ extern "C" {
 
 /* 0x05: RESERVED (no user‐accessible register)                                                           */
 
-/* 0x06: Current‐Sense Multiplexer Control Register (CSMUXCR) – select which channel’s sense is on I_SENSE */
+/* 0x06: Current‐Sense Multiplexer Control Register (CSMUXCR) – select which channel's sense is on I_SENSE */
 #define VNQ7003_REG_CSMUXCR        0x06U
 /* CSMUXCR Bits:
  *   Bit 7–4: – (Reserved)
  *   Bit 3: MUXEN – current‐sense‐mux enable (1 = output I_SENSE drives selected channel)
- *   Bits 2–0: MUXCH – selects which channel’s CSENSE is output:
+ *   Bits 2–0: MUXCH – selects which channel's CSENSE is output:
  *             0 = CH0, 1 = CH1, 2 = CH2, 3 = CH3 (4..7 = reserved)
  */
 #define VNQ7003_CSMUXCR_MUXEN      (1U << 3)
@@ -126,7 +118,7 @@ extern "C" {
 /* 0x08: Channel Latch‐OFF Timer Control Register (CHLOFFTCR0,1) – blanking window for channels 0–1 */
 #define VNQ7003_REG_CHLOFFTCR01    0x08U
 /* CHLOFFTCR0,1 Bits:
- *   Bits 3–0: CHLOFFTCR0x – 4-bit blanking code for channel 0 (0x0 = latch-off, 0x1..0xF = 17 ms..255 ms)
+ *   Bits 3–0: CHLOFFTCR0x – 4-bit blanking code for channel 0 (0x0 = latch-off, 0x1..0xF = 17 ms..255 ms)
  *   Bits 7–4: CHLOFFTCR1x – 4-bit blanking code for channel 1 (same encoding)
  */
 #define VNQ7003_CHLOFFTCR_CH0_MASK (0x0FU)
@@ -154,7 +146,7 @@ extern "C" {
  *   0x03: Product Code 2 (should read 0x48h)
  *   0x04: Product Code 3 (should read 0x31h)
  */
-#define VNQ7003_REG_COMPANY_CODE   0x00U  /* “STM” = 0x00h  (ROM)         */
+#define VNQ7003_REG_COMPANY_CODE   0x00U  /* "STM" = 0x00h  (ROM)         */
 #define VNQ7003_REG_DEVICE_FAMILY  0x01U  /* Product family = 0x01h (ROM) */
 #define VNQ7003_REG_PRODUCT_CODE1  0x02U  /* First product code = 0x56h   */
 #define VNQ7003_REG_PRODUCT_CODE2  0x03U  /* Second product code = 0x48h  */
@@ -165,7 +157,7 @@ extern "C" {
 #define VNQ7003_REG_VERSION        0x0AU
 
 /* 0x10: SPI Mode register (ROM, read‐only) – bitfields define SPI config
- *   See “SPI Modes” (Table 22 on p. 37) for bit-layout.
+ *   See "SPI Modes" (Table 22 on p. 37) for bit-layout.
  */
 #define VNQ7003_REG_SPI_MODE       0x10U
 /* 0x11: Watchdog Type register (ROM, read‐only) – indicates WD type used by device          */
@@ -212,7 +204,7 @@ extern "C" {
  */
 
 /* 0x32: Channels Latch‐OFF Status Register (CHLOFFSR, ROM read‐only)
- *   Bits 3..0 reflect “latched off” fault for CH₃..CH₀.                                      */
+ *   Bits 3..0 reflect "latched off" fault for CH₃..CH₀.                                      */
 #define VNQ7003_REG_CHLOFFSR       0x32U
 /* CHLOFFSR Bits:
  *   Bit 3: CHLOFFSR3 – latched‐off state on channel 3 (1 = latched)
@@ -222,7 +214,7 @@ extern "C" {
  */
 
 /* 0x33: VDS Feedback Status Register (VDSFSR, read‐clear)
- *   Bits 3..0 reflect “high VDS” fault at turn‐off for CH₃..CH₀.                              */
+ *   Bits 3..0 reflect "high VDS" fault at turn‐off for CH₃..CH₀.                              */
 #define VNQ7003_REG_VDSFSR         0x33U
 /* VDSFSR Bits:
  *   Bit 3: VDSFSR3 – high‐VDS‐at‐turn‐off on channel 3 (1 = fault)
@@ -263,13 +255,13 @@ extern "C" {
 
 
 /***────────────────────────────────────────────────────────────────────────***/
-/**                              SPI “Special” Commands                        **/
+/**                              SPI "Special" Commands                        **/
 /***────────────────────────────────────────────────────────────────────────***/
 
 /* 0xFF (OC1=1, OC0=1, Addr=0x3F = 0b111111)  → SW‐Reset (reset all control registers to defaults) */
 #define VNQ7003_CMD_SWRESET        0xFFU
 
-/* 0xBF (OC1=1, OC0=0, Addr=0x3F = 0b111111)  → “Read‐and‐Clear All Status Registers” */
+/* 0xBF (OC1=1, OC0=0, Addr=0x3F = 0b111111)  → "Read‐and‐Clear All Status Registers" */
 #define VNQ7003_CMD_CLEAR_STATUS   0xBFU
 
 
@@ -278,7 +270,7 @@ extern "C" {
 /***────────────────────────────────────────────────────────────────────────***/
 
 /**
- * @brief  Build a 16‐bit SPI “write” transaction for a given 6-bit register address.
+ * @brief  Build a 16‐bit SPI "write" transaction for a given 6-bit register address.
  * @param  addr   6-bit register address (0x00..0x3F)
  * @param  data   8-bit data to be written
  * @return 16-bit payload (command byte << 8 | data byte)
@@ -290,7 +282,7 @@ extern "C" {
     (uint16_t)(((uint8_t)(addr) & 0x3FU) << 8 | (uint8_t)(data))
 
 /**
- * @brief  Build a 16-bit SPI “read” transaction for a given 6-bit register address.
+ * @brief  Build a 16-bit SPI "read" transaction for a given 6-bit register address.
  * @param  addr   6-bit register address (0x00..0x3F)
  * @return 16-bit payload (command byte << 8 | 0xFF) – second byte is dummy (0xFF)
  *
