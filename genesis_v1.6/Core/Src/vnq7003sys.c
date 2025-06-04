@@ -639,3 +639,198 @@ void vnq_print_simple_status(void)
 
     printf("======================\r\n\r\n");
 }
+
+// Hardware debugging and power supply checking functions
+
+// Function to check if the issue is VCC voltage
+bool vnq_check_power_supply(void)
+{
+    uint8_t gensr, gsb;
+    bool power_ok = true;
+
+    printf("VNQ7003: Checking power supply status...\r\n");
+
+    if (vnq_read_reg(VNQ7003_REG_GENSR, &gensr, &gsb)) {
+        printf("VNQ7003: GENSR=0x%02X, GSB=0x%02X\r\n", gensr, gsb);
+
+        if (gsb & 0x80) {
+            printf("VNQ7003: ERROR - VCC Undervoltage! GSB bit 7 set\r\n");
+            printf("VNQ7003: VCC voltage is below minimum threshold\r\n");
+            printf("VNQ7003: Required: 8V-28V, Typical: 12V\r\n");
+            power_ok = false;
+        }
+
+        if (gensr & VNQ7003_GENSR_VCCUV) {
+            printf("VNQ7003: ERROR - GENSR Undervoltage flag set\r\n");
+            power_ok = false;
+        }
+
+        if (gsb & 0x01) {
+            printf("VNQ7003: WARNING - Device in Fail-Safe mode\r\n");
+            printf("VNQ7003: This could be due to undervoltage or watchdog timeout\r\n");
+        }
+    } else {
+        printf("VNQ7003: ERROR - Cannot read GENSR (SPI communication failure)\r\n");
+        return false;
+    }
+
+    if (power_ok) {
+        printf("VNQ7003: Power supply appears OK\r\n");
+    } else {
+        printf("VNQ7003: POWER SUPPLY ISSUE DETECTED!\r\n");
+        printf("VNQ7003: Actions to take:\r\n");
+        printf("  1. Measure VCC pin voltage with multimeter\r\n");
+        printf("  2. Check power supply capacity (device draws up to 80A)\r\n");
+        printf("  3. Verify power supply connections\r\n");
+        printf("  4. Check for voltage drops in wiring\r\n");
+    }
+
+    return power_ok;
+}
+
+// Function to test SPI communication
+bool vnq_test_spi_communication(void)
+{
+    uint8_t company_code, device_family, version, gsb;
+    bool spi_ok = true;
+
+    printf("VNQ7003: Testing SPI communication...\r\n");
+
+    // Try to read ROM registers (these should always work)
+    if (vnq_read_reg(VNQ7003_REG_COMPANY_CODE, &company_code, &gsb)) {
+        printf("VNQ7003: Company Code: 0x%02X (expected: 0x00)\r\n", company_code);
+        if (company_code != 0x00) {
+            printf("VNQ7003: WARNING - Unexpected company code\r\n");
+            spi_ok = false;
+        }
+    } else {
+        printf("VNQ7003: ERROR - Cannot read Company Code\r\n");
+        spi_ok = false;
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_DEVICE_FAMILY, &device_family, &gsb)) {
+        printf("VNQ7003: Device Family: 0x%02X (expected: 0x01)\r\n", device_family);
+        if (device_family != 0x01) {
+            printf("VNQ7003: WARNING - Unexpected device family\r\n");
+            spi_ok = false;
+        }
+    } else {
+        printf("VNQ7003: ERROR - Cannot read Device Family\r\n");
+        spi_ok = false;
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_VERSION, &version, &gsb)) {
+        printf("VNQ7003: Silicon Version: 0x%02X\r\n", version);
+    } else {
+        printf("VNQ7003: ERROR - Cannot read Version\r\n");
+        spi_ok = false;
+    }
+
+    if (spi_ok) {
+        printf("VNQ7003: SPI communication is working\r\n");
+    } else {
+        printf("VNQ7003: SPI COMMUNICATION ISSUES DETECTED!\r\n");
+        printf("VNQ7003: Check:\r\n");
+        printf("  1. SPI wiring (SCK, MOSI, MISO, CS)\r\n");
+        printf("  2. SPI clock frequency (max 10 MHz)\r\n");
+        printf("  3. Ground connections\r\n");
+        printf("  4. Signal integrity\r\n");
+    }
+
+    return spi_ok;
+}
+
+// Modified initialization function with better error handling
+bool VNQ7003_Init_For_DI_Control_Enhanced(void)
+{
+    printf("VNQ7003: Enhanced initialization with diagnostics...\r\n");
+
+    // Step 1: Test SPI communication first
+    if (!vnq_test_spi_communication()) {
+        printf("VNQ7003: SPI test failed - check hardware connections\r\n");
+        return false;
+    }
+
+    // Step 2: Check power supply
+    if (!vnq_check_power_supply()) {
+        printf("VNQ7003: Power supply issues detected\r\n");
+        printf("VNQ7003: Continuing anyway to test functionality...\r\n");
+        // Don't return false here - try to continue
+    }
+
+    // Step 3: Run comprehensive diagnosis
+    vnq_comprehensive_diagnosis();
+
+    // Step 4: Try enhanced normal mode entry
+    if (!vnq_enter_normal_mode()) {
+        printf("VNQ7003: Enhanced normal mode entry failed\r\n");
+
+        // Final diagnostic attempt
+        printf("VNQ7003: Final diagnostic - trying to understand the issue...\r\n");
+        uint8_t ctrl, gsb;
+        if (vnq_read_reg(VNQ7003_REG_CTLR, &ctrl, &gsb)) {
+            printf("VNQ7003: Final CTRL=0x%02X, GSB=0x%02X\r\n", ctrl, gsb);
+
+            if (gsb & 0x80) {
+                printf("VNQ7003: ROOT CAUSE: VCC voltage too low!\r\n");
+                printf("VNQ7003: The device cannot enter Normal mode with low VCC\r\n");
+                printf("VNQ7003: FIX: Increase VCC to at least 8V (12V recommended)\r\n");
+            } else if (gsb & 0x01) {
+                printf("VNQ7003: ROOT CAUSE: Device stuck in Fail-Safe mode\r\n");
+                printf("VNQ7003: This could be due to watchdog timeout or protection\r\n");
+            } else {
+                printf("VNQ7003: ROOT CAUSE: Unknown - device may be defective\r\n");
+            }
+        }
+
+        return false;
+    }
+
+    // Step 5: Continue with rest of initialization if Normal mode worked
+    printf("VNQ7003: Normal mode successful, continuing initialization...\r\n");
+
+    // Enable direct input control for all channels
+    uint8_t diencr_value = VNQ7003_DIENCR_CH0 | VNQ7003_DIENCR_CH1 |
+                          VNQ7003_DIENCR_CH2 | VNQ7003_DIENCR_CH3;
+    if (!vnq_write_reg(VNQ7003_REG_DIENCR, diencr_value)) {
+        printf("VNQ7003: Failed to enable direct inputs\r\n");
+        return false;
+    }
+
+    // Enable open-load pull-ups
+    uint8_t oloffcr_value = VNQ7003_OLOFFCR_CH0 | VNQ7003_OLOFFCR_CH1 |
+                           VNQ7003_OLOFFCR_CH2 | VNQ7003_OLOFFCR_CH3;
+    if (!vnq_write_reg(VNQ7003_REG_OLOFFCR, oloffcr_value)) {
+        printf("VNQ7003: Failed to enable pull-ups\r\n");
+        return false;
+    }
+
+    // Set LED mode for channels 0-1
+    uint8_t ccr_value = VNQ7003_CCR_MODE_CH0 | VNQ7003_CCR_MODE_CH1;
+    if (!vnq_write_reg(VNQ7003_REG_CCR, ccr_value)) {
+        printf("VNQ7003: Failed to set LED mode\r\n");
+        return false;
+    }
+
+    // Configure GPIO pins for direct inputs
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    GPIO_InitStruct.Pin = GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    // Set all DI pins LOW initially (loads OFF)
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6, GPIO_PIN_RESET);
+
+    // Start the watchdog timer
+    if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK) {
+        printf("VNQ7003: Failed to start watchdog timer\r\n");
+        return false;
+    }
+
+    printf("VNQ7003: Enhanced initialization completed successfully\r\n");
+    return true;
+}
