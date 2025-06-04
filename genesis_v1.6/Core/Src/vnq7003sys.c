@@ -33,6 +33,9 @@ static bool vnq_write_reg(uint8_t addr, uint8_t data);
 static bool vnq_read_reg(uint8_t addr, uint8_t *data, uint8_t *gsb);
 static bool vnq_enter_normal_mode(void);
 static bool vnq_service_watchdog(void);
+static void vnq_comprehensive_diagnosis(void);
+static bool vnq_check_power_supply(void);
+static bool vnq_test_spi_communication(void);
 
 /*============================================================================
  * Private Functions
@@ -243,42 +246,8 @@ static bool vnq_enter_normal_mode(void)
     return true;
 }
 
-// Additional diagnostic function
-void vnq_comprehensive_diagnosis(void)
-{
-    uint8_t data, gsb;
-
-    printf("\r\n=== VNQ7003 Comprehensive Diagnosis ===\r\n");
-
-    // Read all important registers
-    if (vnq_read_reg(VNQ7003_REG_CTLR, &data, &gsb)) {
-        printf("CTRL (0x00): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
-    }
-
-    if (vnq_read_reg(VNQ7003_REG_GENSR, &data, &gsb)) {
-        printf("GENSR (0x34): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
-        if (data & VNQ7003_GENSR_VCCUV) printf("  - VCC Undervoltage detected!\r\n");
-        if (data & VNQ7003_GENSR_RST) printf("  - Reset event occurred\r\n");
-        if (data & VNQ7003_GENSR_SPIE) printf("  - SPI error detected\r\n");
-    }
-
-    if (vnq_read_reg(VNQ7003_REG_CONFIG, &data, &gsb)) {
-        printf("CONFIG (0x3F): 0x%02X, GSB: 0x%02X\r\n", data, gsb);
-    }
-
-    // Try to read device ID
-    if (vnq_read_reg(VNQ7003_REG_COMPANY_CODE, &data, &gsb)) {
-        printf("Company Code: 0x%02X (should be 0x00)\r\n", data);
-    }
-
-    if (vnq_read_reg(VNQ7003_REG_DEVICE_FAMILY, &data, &gsb)) {
-        printf("Device Family: 0x%02X (should be 0x01)\r\n", data);
-    }
-
-    printf("========================================\r\n\r\n");
-}
-
-void vnq_comprehensive_diagnosis(void)
+// Comprehensive diagnosis function - SINGLE DEFINITION
+static void vnq_comprehensive_diagnosis(void)
 {
     uint8_t data, gsb;
 
@@ -349,6 +318,104 @@ static bool vnq_service_watchdog(void)
     }
 
     return ok;
+}
+
+// Function to check if the issue is VCC voltage
+static bool vnq_check_power_supply(void)
+{
+    uint8_t gensr, gsb;
+    bool power_ok = true;
+
+    printf("VNQ7003: Checking power supply status...\r\n");
+
+    if (vnq_read_reg(VNQ7003_REG_GENSR, &gensr, &gsb)) {
+        printf("VNQ7003: GENSR=0x%02X, GSB=0x%02X\r\n", gensr, gsb);
+
+        if (gsb & 0x80) {
+            printf("VNQ7003: ERROR - VCC Undervoltage! GSB bit 7 set\r\n");
+            printf("VNQ7003: VCC voltage is below minimum threshold\r\n");
+            printf("VNQ7003: Required: 8V-28V, Typical: 12V\r\n");
+            power_ok = false;
+        }
+
+        if (gensr & VNQ7003_GENSR_VCCUV) {
+            printf("VNQ7003: ERROR - GENSR Undervoltage flag set\r\n");
+            power_ok = false;
+        }
+
+        if (gsb & 0x01) {
+            printf("VNQ7003: WARNING - Device in Fail-Safe mode\r\n");
+            printf("VNQ7003: This could be due to undervoltage or watchdog timeout\r\n");
+        }
+    } else {
+        printf("VNQ7003: ERROR - Cannot read GENSR (SPI communication failure)\r\n");
+        return false;
+    }
+
+    if (power_ok) {
+        printf("VNQ7003: Power supply appears OK\r\n");
+    } else {
+        printf("VNQ7003: POWER SUPPLY ISSUE DETECTED!\r\n");
+        printf("VNQ7003: Actions to take:\r\n");
+        printf("  1. Measure VCC pin voltage with multimeter\r\n");
+        printf("  2. Check power supply capacity (device draws up to 80A)\r\n");
+        printf("  3. Verify power supply connections\r\n");
+        printf("  4. Check for voltage drops in wiring\r\n");
+    }
+
+    return power_ok;
+}
+
+// Function to test SPI communication
+static bool vnq_test_spi_communication(void)
+{
+    uint8_t company_code, device_family, version, gsb;
+    bool spi_ok = true;
+
+    printf("VNQ7003: Testing SPI communication...\r\n");
+
+    // Try to read ROM registers (these should always work)
+    if (vnq_read_reg(VNQ7003_REG_COMPANY_CODE, &company_code, &gsb)) {
+        printf("VNQ7003: Company Code: 0x%02X (expected: 0x00)\r\n", company_code);
+        if (company_code != 0x00) {
+            printf("VNQ7003: WARNING - Unexpected company code\r\n");
+            spi_ok = false;
+        }
+    } else {
+        printf("VNQ7003: ERROR - Cannot read Company Code\r\n");
+        spi_ok = false;
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_DEVICE_FAMILY, &device_family, &gsb)) {
+        printf("VNQ7003: Device Family: 0x%02X (expected: 0x01)\r\n", device_family);
+        if (device_family != 0x01) {
+            printf("VNQ7003: WARNING - Unexpected device family\r\n");
+            spi_ok = false;
+        }
+    } else {
+        printf("VNQ7003: ERROR - Cannot read Device Family\r\n");
+        spi_ok = false;
+    }
+
+    if (vnq_read_reg(VNQ7003_REG_VERSION, &version, &gsb)) {
+        printf("VNQ7003: Silicon Version: 0x%02X\r\n", version);
+    } else {
+        printf("VNQ7003: ERROR - Cannot read Version\r\n");
+        spi_ok = false;
+    }
+
+    if (spi_ok) {
+        printf("VNQ7003: SPI communication is working\r\n");
+    } else {
+        printf("VNQ7003: SPI COMMUNICATION ISSUES DETECTED!\r\n");
+        printf("VNQ7003: Check:\r\n");
+        printf("  1. SPI wiring (SCK, MOSI, MISO, CS)\r\n");
+        printf("  2. SPI clock frequency (max 10 MHz)\r\n");
+        printf("  3. Ground connections\r\n");
+        printf("  4. Signal integrity\r\n");
+    }
+
+    return spi_ok;
 }
 
 /*============================================================================
@@ -640,106 +707,6 @@ void vnq_print_simple_status(void)
     printf("======================\r\n\r\n");
 }
 
-// Hardware debugging and power supply checking functions
-
-// Function to check if the issue is VCC voltage
-bool vnq_check_power_supply(void)
-{
-    uint8_t gensr, gsb;
-    bool power_ok = true;
-
-    printf("VNQ7003: Checking power supply status...\r\n");
-
-    if (vnq_read_reg(VNQ7003_REG_GENSR, &gensr, &gsb)) {
-        printf("VNQ7003: GENSR=0x%02X, GSB=0x%02X\r\n", gensr, gsb);
-
-        if (gsb & 0x80) {
-            printf("VNQ7003: ERROR - VCC Undervoltage! GSB bit 7 set\r\n");
-            printf("VNQ7003: VCC voltage is below minimum threshold\r\n");
-            printf("VNQ7003: Required: 8V-28V, Typical: 12V\r\n");
-            power_ok = false;
-        }
-
-        if (gensr & VNQ7003_GENSR_VCCUV) {
-            printf("VNQ7003: ERROR - GENSR Undervoltage flag set\r\n");
-            power_ok = false;
-        }
-
-        if (gsb & 0x01) {
-            printf("VNQ7003: WARNING - Device in Fail-Safe mode\r\n");
-            printf("VNQ7003: This could be due to undervoltage or watchdog timeout\r\n");
-        }
-    } else {
-        printf("VNQ7003: ERROR - Cannot read GENSR (SPI communication failure)\r\n");
-        return false;
-    }
-
-    if (power_ok) {
-        printf("VNQ7003: Power supply appears OK\r\n");
-    } else {
-        printf("VNQ7003: POWER SUPPLY ISSUE DETECTED!\r\n");
-        printf("VNQ7003: Actions to take:\r\n");
-        printf("  1. Measure VCC pin voltage with multimeter\r\n");
-        printf("  2. Check power supply capacity (device draws up to 80A)\r\n");
-        printf("  3. Verify power supply connections\r\n");
-        printf("  4. Check for voltage drops in wiring\r\n");
-    }
-
-    return power_ok;
-}
-
-// Function to test SPI communication
-bool vnq_test_spi_communication(void)
-{
-    uint8_t company_code, device_family, version, gsb;
-    bool spi_ok = true;
-
-    printf("VNQ7003: Testing SPI communication...\r\n");
-
-    // Try to read ROM registers (these should always work)
-    if (vnq_read_reg(VNQ7003_REG_COMPANY_CODE, &company_code, &gsb)) {
-        printf("VNQ7003: Company Code: 0x%02X (expected: 0x00)\r\n", company_code);
-        if (company_code != 0x00) {
-            printf("VNQ7003: WARNING - Unexpected company code\r\n");
-            spi_ok = false;
-        }
-    } else {
-        printf("VNQ7003: ERROR - Cannot read Company Code\r\n");
-        spi_ok = false;
-    }
-
-    if (vnq_read_reg(VNQ7003_REG_DEVICE_FAMILY, &device_family, &gsb)) {
-        printf("VNQ7003: Device Family: 0x%02X (expected: 0x01)\r\n", device_family);
-        if (device_family != 0x01) {
-            printf("VNQ7003: WARNING - Unexpected device family\r\n");
-            spi_ok = false;
-        }
-    } else {
-        printf("VNQ7003: ERROR - Cannot read Device Family\r\n");
-        spi_ok = false;
-    }
-
-    if (vnq_read_reg(VNQ7003_REG_VERSION, &version, &gsb)) {
-        printf("VNQ7003: Silicon Version: 0x%02X\r\n", version);
-    } else {
-        printf("VNQ7003: ERROR - Cannot read Version\r\n");
-        spi_ok = false;
-    }
-
-    if (spi_ok) {
-        printf("VNQ7003: SPI communication is working\r\n");
-    } else {
-        printf("VNQ7003: SPI COMMUNICATION ISSUES DETECTED!\r\n");
-        printf("VNQ7003: Check:\r\n");
-        printf("  1. SPI wiring (SCK, MOSI, MISO, CS)\r\n");
-        printf("  2. SPI clock frequency (max 10 MHz)\r\n");
-        printf("  3. Ground connections\r\n");
-        printf("  4. Signal integrity\r\n");
-    }
-
-    return spi_ok;
-}
-
 // Modified initialization function with better error handling
 bool VNQ7003_Init_For_DI_Control_Enhanced(void)
 {
@@ -833,4 +800,159 @@ bool VNQ7003_Init_For_DI_Control_Enhanced(void)
 
     printf("VNQ7003: Enhanced initialization completed successfully\r\n");
     return true;
+}
+
+// Enhanced VNQ7003 Diagnostic - Complete register scan
+void vnq_complete_diagnostic(void)
+{
+    printf("\r\n=== COMPLETE VNQ7003 DIAGNOSTIC ===\r\n");
+
+    // 1. Read all status registers to find the hidden fault
+    printf("1. Complete Status Register Scan:\r\n");
+
+    uint8_t reg_data, gsb;
+
+    // GENSR (0x34) - Generic Status Register
+    if (vnq_read_reg(VNQ7003_REG_GENSR, &reg_data, &gsb)) {
+        printf("   GENSR (0x34): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      VCCUV (bit 7): %s\r\n", (reg_data & 0x80) ? "UNDERVOLTAGE!" : "OK");
+        printf("      RST (bit 6): %s\r\n", (reg_data & 0x40) ? "Reset occurred" : "OK");
+        printf("      SPIE (bit 5): %s\r\n", (reg_data & 0x20) ? "SPI Error" : "OK");
+    } else {
+        printf("   GENSR: READ FAILED\r\n");
+    }
+
+    // CHFBSR (0x30) - Channel Feedback Status Register
+    if (vnq_read_reg(VNQ7003_REG_CHFBSR, &reg_data, &gsb)) {
+        printf("   CHFBSR (0x30): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      CH0 fault: %s\r\n", (reg_data & 0x01) ? "YES" : "No");
+        printf("      CH1 fault: %s\r\n", (reg_data & 0x02) ? "YES" : "No");
+        printf("      CH2 fault: %s\r\n", (reg_data & 0x04) ? "YES" : "No");
+        printf("      CH3 fault: %s\r\n", (reg_data & 0x08) ? "YES" : "No");
+    } else {
+        printf("   CHFBSR: READ FAILED\r\n");
+    }
+
+    // STKFLTR (0x31) - Open-load OFF-state/Stuck to VCC Status
+    if (vnq_read_reg(VNQ7003_REG_STKFLTR, &reg_data, &gsb)) {
+        printf("   STKFLTR (0x31): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      CH0 open/stuck: %s\r\n", (reg_data & 0x01) ? "YES" : "No");
+        printf("      CH1 open/stuck: %s\r\n", (reg_data & 0x02) ? "YES" : "No");
+        printf("      CH2 open/stuck: %s\r\n", (reg_data & 0x04) ? "YES" : "No");
+        printf("      CH3 open/stuck: %s\r\n", (reg_data & 0x08) ? "YES" : "No");
+    } else {
+        printf("   STKFLTR: READ FAILED\r\n");
+    }
+
+    // CHLOFFSR (0x32) - Channels Latch-off Status Register
+    if (vnq_read_reg(VNQ7003_REG_CHLOFFSR, &reg_data, &gsb)) {
+        printf("   CHLOFFSR (0x32): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      CH0 latch-off: %s\r\n", (reg_data & 0x01) ? "YES" : "No");
+        printf("      CH1 latch-off: %s\r\n", (reg_data & 0x02) ? "YES" : "No");
+        printf("      CH2 latch-off: %s\r\n", (reg_data & 0x04) ? "YES" : "No");
+        printf("      CH3 latch-off: %s\r\n", (reg_data & 0x08) ? "YES" : "No");
+    } else {
+        printf("   CHLOFFSR: READ FAILED\r\n");
+    }
+
+    // VDSFSR (0x33) - VDS Feedback Status Register
+    if (vnq_read_reg(VNQ7003_REG_VDSFSR, &reg_data, &gsb)) {
+        printf("   VDSFSR (0x33): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      CH0 VDS high: %s\r\n", (reg_data & 0x01) ? "YES" : "No");
+        printf("      CH1 VDS high: %s\r\n", (reg_data & 0x02) ? "YES" : "No");
+        printf("      CH2 VDS high: %s\r\n", (reg_data & 0x04) ? "YES" : "No");
+        printf("      CH3 VDS high: %s\r\n", (reg_data & 0x08) ? "YES" : "No");
+    } else {
+        printf("   VDSFSR: READ FAILED\r\n");
+    }
+
+    // 2. Check all control registers
+    printf("\r\n2. Control Register Status:\r\n");
+
+    // CTLR (0x00) - Control Register
+    if (vnq_read_reg(VNQ7003_REG_CTLR, &reg_data, &gsb)) {
+        printf("   CTLR (0x00): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      EN: %s\r\n", (reg_data & 0x01) ? "Normal Mode" : "Fail-Safe Mode");
+        printf("      CTDTH0: %s\r\n", (reg_data & 0x02) ? "Set" : "Clear");
+        printf("      CTDTH1: %s\r\n", (reg_data & 0x04) ? "Set" : "Clear");
+        printf("      UNLOCK: %s\r\n", (reg_data & 0x10) ? "Set" : "Clear");
+        printf("      GOSTBY: %s\r\n", (reg_data & 0x20) ? "Standby Mode" : "Clear");
+    } else {
+        printf("   CTLR: READ FAILED\r\n");
+    }
+
+    // CONFIG (0x3F) - Configuration Register
+    if (vnq_read_reg(VNQ7003_REG_CONFIG, &reg_data, &gsb)) {
+        printf("   CONFIG (0x3F): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      WDTB: %s\r\n", (reg_data & 0x08) ? "Set" : "Clear");
+        printf("      VDS Masks: CH0=%s CH1=%s CH2=%s CH3=%s\r\n",
+               (reg_data & 0x10) ? "Masked" : "Active",
+               (reg_data & 0x20) ? "Masked" : "Active",
+               (reg_data & 0x40) ? "Masked" : "Active",
+               (reg_data & 0x80) ? "Masked" : "Active");
+    } else {
+        printf("   CONFIG: READ FAILED\r\n");
+    }
+
+    // 3. Test the CSN-only GSB read (faster method)
+    printf("\r\n3. Quick GSB Test (CSN pulse method):\r\n");
+    for (int i = 0; i < 5; i++) {
+        // Just pulse CSN to get GSB without full SPI transaction
+        HAL_GPIO_WritePin(SEL_GPIO_Port, SEL_Pin, GPIO_PIN_RESET);
+        __NOP(); __NOP(); __NOP(); __NOP(); // Small delay
+        HAL_GPIO_WritePin(SEL_GPIO_Port, SEL_Pin, GPIO_PIN_SET);
+
+        // Now do a read to get the GSB
+        if (vnq_read_reg(VNQ7003_REG_CTLR, &reg_data, &gsb)) {
+            printf("   Test %d: GSB=0x%02X (bits: ", i+1, gsb);
+            for (int bit = 7; bit >= 0; bit--) {
+                printf("%d", (gsb >> bit) & 1);
+            }
+            printf(")\r\n");
+        }
+        HAL_Delay(50);
+    }
+
+    // 4. Voltage analysis
+    printf("\r\n4. Power Supply Deep Analysis:\r\n");
+    if (vnq_read_reg(VNQ7003_REG_GENSR, &reg_data, &gsb)) {
+        printf("   GENSR VCCUV flag: %s\r\n", (reg_data & 0x80) ? "UNDERVOLTAGE" : "OK");
+        printf("   GSB Global fault: %s\r\n", (gsb & 0x80) ? "FAULT PRESENT" : "OK");
+
+        if ((gsb & 0x80) && !(reg_data & 0x80)) {
+            printf("   🔍 ANALYSIS: GSB shows fault but GENSR shows VCC OK\r\n");
+            printf("      This suggests the fault is NOT VCC undervoltage!\r\n");
+            printf("      Check other status registers above for the real cause.\r\n");
+        } else if ((gsb & 0x80) && (reg_data & 0x80)) {
+            printf("   ⚠️  CONFIRMED: VCC Undervoltage is the problem!\r\n");
+            printf("      Measure VCC pin voltage - must be 8-28V\r\n");
+        }
+    }
+
+    // 5. Clear all status registers attempt
+    printf("\r\n5. Attempting to Clear Status Registers:\r\n");
+
+    // Try the clear-all-status command
+    uint8_t clear_cmd = VNQ7003_CMD_CLEAR_STATUS;  // 0xBF
+    printf("   Sending clear status command (0xBF)...\r\n");
+
+    HAL_GPIO_WritePin(SEL_GPIO_Port, SEL_Pin, GPIO_PIN_RESET);
+    HAL_SPI_Transmit(&hspi1, &clear_cmd, 1, 100);
+    HAL_GPIO_WritePin(SEL_GPIO_Port, SEL_Pin, GPIO_PIN_SET);
+
+    HAL_Delay(100);
+
+    // Check if GSB cleared
+    if (vnq_read_reg(VNQ7003_REG_CTLR, &reg_data, &gsb)) {
+        printf("   After clear: GSB=0x%02X %s\r\n", gsb,
+               (gsb & 0x80) ? "Still faulted" : "Cleared!");
+    }
+
+    printf("\r\n=== DIAGNOSTIC COMPLETE ===\r\n");
+    printf("Key findings:\r\n");
+    printf("• If GENSR bit 7 = 1: VCC voltage problem\r\n");
+    printf("• If other status registers show faults: Hardware/wiring issue\r\n");
+    printf("• If GSB clears after command: Temporary fault\r\n");
+    printf("• If nothing clears GSB bit 7: Persistent hardware problem\r\n");
+    printf("==============================\r\n\r\n");
 }

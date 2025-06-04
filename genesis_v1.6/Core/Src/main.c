@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body - Fixed Version
+  * @brief          : Main program body - Compatible with Existing Codebase
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -66,6 +66,7 @@ static void MX_TIM2_Init(void);
 int _write(int file, char *ptr, int len);
 void check_fdcan_status(void);
 void test_manual_command(void);
+void print_system_status(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -87,7 +88,7 @@ int _write(int file, char *ptr, int len)
 void check_fdcan_status(void)
 {
     static uint32_t last_check = 0;
-    if (HAL_GetTick() - last_check > 3000) {  // Every 3 seconds
+    if (HAL_GetTick() - last_check > 5000) {  // Every 5 seconds
         uint32_t messages, errors;
         RVC_GetStats(&messages, &errors);
         printf("RV-C Stats: %lu msgs, %lu errors\r\n", messages, errors);
@@ -109,8 +110,8 @@ void test_manual_command(void)
     static bool test_done = false;
     static uint32_t test_start = 0;
 
-    if (!test_done && HAL_GetTick() > 10000) {  // Wait 10 seconds after startup
-        printf("=== Testing Manual Command ===\r\n");
+    if (!test_done && HAL_GetTick() > 15000) {  // Wait 15 seconds after startup
+        printf("=== Testing Manual Load Command ===\r\n");
         uint8_t test_data[] = {0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
         RVC_HandleLoadCommand(0x1FFBC, test_data, 8);
         test_start = HAL_GetTick();
@@ -123,6 +124,37 @@ void test_manual_command(void)
         uint8_t test_data[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
         RVC_HandleLoadCommand(0x1FFBC, test_data, 8);
         test_start = 0;  // Prevent repeat
+    }
+}
+
+// Enhanced system status monitoring
+void print_system_status(void)
+{
+    static uint32_t last_status = 0;
+    if (HAL_GetTick() - last_status > 10000) {  // Every 10 seconds
+        printf("\r\n=== System Status Report ===\r\n");
+        printf("Uptime: %lu seconds\r\n", HAL_GetTick() / 1000);
+
+        // VNQ7003 detailed status
+        vnq_print_simple_status();
+
+        // RV-C statistics
+        uint32_t messages, errors;
+        RVC_GetStats(&messages, &errors);
+        printf("RV-C: %lu messages processed, %lu errors\r\n", messages, errors);
+
+        // Channel states
+        for (uint8_t ch = 0; ch < 4; ch++) {
+            bool on_off;
+            uint8_t pwm_percent;
+            if (RVC_GetChannelState(ch, &on_off, &pwm_percent)) {
+                printf("Channel %d: %s @ %d%%\r\n",
+                       ch, on_off ? "ON" : "OFF", pwm_percent);
+            }
+        }
+
+        printf("========================\r\n\r\n");
+        last_status = HAL_GetTick();
     }
 }
 
@@ -172,13 +204,23 @@ int main(void)
 
   printf("\r\n=== RV-C DC Load Controller - STARTUP ===\r\n");
   printf("System Clock: %lu Hz\r\n", HAL_RCC_GetSysClockFreq());
+  printf("Build: %s %s\r\n", __DATE__, __TIME__);
   printf("Initializing subsystems...\r\n");
 
-  // Initialize VNQ7003 driver first
-  printf("Initializing VNQ7003...\r\n");
+  // Initialize VNQ7003 driver first with enhanced diagnostics
+  printf("Initializing VNQ7003 with diagnostics...\r\n");
+
+  // Try the enhanced initialization for better diagnostics
   if (!VNQ7003_Init_For_DI_Control()) {
-      printf("ERROR: VNQ7003 failed to initialize!\r\n");
-      Error_Handler();
+      printf("ERROR: VNQ7003 standard initialization failed!\r\n");
+      printf("Trying basic initialization as fallback...\r\n");
+
+      // Fallback to basic init
+      if (!vnq_init()) {
+          printf("CRITICAL: VNQ7003 completely failed to initialize!\r\n");
+          printf("Check hardware connections and power supply\r\n");
+          Error_Handler();
+      }
   }
   printf("VNQ7003 initialized successfully\r\n");
 
@@ -188,8 +230,11 @@ int main(void)
   printf("RV-C system ready\r\n");
 
   printf("\r\n=== SYSTEM READY ===\r\n");
-  printf("Listening for RV-C commands on address 0x25\r\n");
-  printf("Send test command: CAN ID 0x19FFBCFF, Data: 00 01 00 00 00 00 00 00\r\n");
+  printf("Listening for RV-C commands on address 0x%02X\r\n", RVC_SRC_ADDR);
+  printf("Test commands:\r\n");
+  printf("  Load ON:  CAN ID 0x19FFBCFF, Data: 00 01 00 00 00 00 00 00\r\n");
+  printf("  Load OFF: CAN ID 0x19FFBCFF, Data: 00 00 00 00 00 00 00 00\r\n");
+  printf("  Dimmer:   CAN ID 0x19FFB9FF, Data: 00 32 00 00 00 00 00 00 (50%%)\r\n");
   printf("=====================\r\n\r\n");
 
   /* USER CODE END 2 */
@@ -205,15 +250,15 @@ int main(void)
     // CRITICAL: Service VNQ7003 watchdog every loop iteration
     vnq_task();
 
-
-
     // Check FDCAN and system status periodically
     check_fdcan_status();
 
-    // Test manual command (comment out after testing)
+    // Test manual command (for testing - can be commented out)
     test_manual_command();
 
-    vnq_print_simple_status();
+    // Print comprehensive system status
+    print_system_status();
+
     // Short delay to prevent overwhelming the system
     HAL_Delay(5);  // 5ms loop timing
   }
@@ -678,6 +723,161 @@ static void MX_USART3_UART_Init(void)
 
 }
 
+// Enhanced VNQ7003 Diagnostic - Complete register scan
+void vnq_complete_diagnostic(void)
+{
+    printf("\r\n=== COMPLETE VNQ7003 DIAGNOSTIC ===\r\n");
+
+    // 1. Read all status registers to find the hidden fault
+    printf("1. Complete Status Register Scan:\r\n");
+
+    uint8_t reg_data, gsb;
+
+    // GENSR (0x34) - Generic Status Register
+    if (vnq_read_reg(VNQ7003_REG_GENSR, &reg_data, &gsb)) {
+        printf("   GENSR (0x34): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      VCCUV (bit 7): %s\r\n", (reg_data & 0x80) ? "UNDERVOLTAGE!" : "OK");
+        printf("      RST (bit 6): %s\r\n", (reg_data & 0x40) ? "Reset occurred" : "OK");
+        printf("      SPIE (bit 5): %s\r\n", (reg_data & 0x20) ? "SPI Error" : "OK");
+    } else {
+        printf("   GENSR: READ FAILED\r\n");
+    }
+
+    // CHFBSR (0x30) - Channel Feedback Status Register
+    if (vnq_read_reg(VNQ7003_REG_CHFBSR, &reg_data, &gsb)) {
+        printf("   CHFBSR (0x30): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      CH0 fault: %s\r\n", (reg_data & 0x01) ? "YES" : "No");
+        printf("      CH1 fault: %s\r\n", (reg_data & 0x02) ? "YES" : "No");
+        printf("      CH2 fault: %s\r\n", (reg_data & 0x04) ? "YES" : "No");
+        printf("      CH3 fault: %s\r\n", (reg_data & 0x08) ? "YES" : "No");
+    } else {
+        printf("   CHFBSR: READ FAILED\r\n");
+    }
+
+    // STKFLTR (0x31) - Open-load OFF-state/Stuck to VCC Status
+    if (vnq_read_reg(VNQ7003_REG_STKFLTR, &reg_data, &gsb)) {
+        printf("   STKFLTR (0x31): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      CH0 open/stuck: %s\r\n", (reg_data & 0x01) ? "YES" : "No");
+        printf("      CH1 open/stuck: %s\r\n", (reg_data & 0x02) ? "YES" : "No");
+        printf("      CH2 open/stuck: %s\r\n", (reg_data & 0x04) ? "YES" : "No");
+        printf("      CH3 open/stuck: %s\r\n", (reg_data & 0x08) ? "YES" : "No");
+    } else {
+        printf("   STKFLTR: READ FAILED\r\n");
+    }
+
+    // CHLOFFSR (0x32) - Channels Latch-off Status Register
+    if (vnq_read_reg(VNQ7003_REG_CHLOFFSR, &reg_data, &gsb)) {
+        printf("   CHLOFFSR (0x32): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      CH0 latch-off: %s\r\n", (reg_data & 0x01) ? "YES" : "No");
+        printf("      CH1 latch-off: %s\r\n", (reg_data & 0x02) ? "YES" : "No");
+        printf("      CH2 latch-off: %s\r\n", (reg_data & 0x04) ? "YES" : "No");
+        printf("      CH3 latch-off: %s\r\n", (reg_data & 0x08) ? "YES" : "No");
+    } else {
+        printf("   CHLOFFSR: READ FAILED\r\n");
+    }
+
+    // VDSFSR (0x33) - VDS Feedback Status Register
+    if (vnq_read_reg(VNQ7003_REG_VDSFSR, &reg_data, &gsb)) {
+        printf("   VDSFSR (0x33): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      CH0 VDS high: %s\r\n", (reg_data & 0x01) ? "YES" : "No");
+        printf("      CH1 VDS high: %s\r\n", (reg_data & 0x02) ? "YES" : "No");
+        printf("      CH2 VDS high: %s\r\n", (reg_data & 0x04) ? "YES" : "No");
+        printf("      CH3 VDS high: %s\r\n", (reg_data & 0x08) ? "YES" : "No");
+    } else {
+        printf("   VDSFSR: READ FAILED\r\n");
+    }
+
+    // 2. Check all control registers
+    printf("\r\n2. Control Register Status:\r\n");
+
+    // CTLR (0x00) - Control Register
+    if (vnq_read_reg(VNQ7003_REG_CTLR, &reg_data, &gsb)) {
+        printf("   CTLR (0x00): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      EN: %s\r\n", (reg_data & 0x01) ? "Normal Mode" : "Fail-Safe Mode");
+        printf("      CTDTH0: %s\r\n", (reg_data & 0x02) ? "Set" : "Clear");
+        printf("      CTDTH1: %s\r\n", (reg_data & 0x04) ? "Set" : "Clear");
+        printf("      UNLOCK: %s\r\n", (reg_data & 0x10) ? "Set" : "Clear");
+        printf("      GOSTBY: %s\r\n", (reg_data & 0x20) ? "Standby Mode" : "Clear");
+    } else {
+        printf("   CTLR: READ FAILED\r\n");
+    }
+
+    // CONFIG (0x3F) - Configuration Register
+    if (vnq_read_reg(VNQ7003_REG_CONFIG, &reg_data, &gsb)) {
+        printf("   CONFIG (0x3F): 0x%02X, GSB: 0x%02X\r\n", reg_data, gsb);
+        printf("      WDTB: %s\r\n", (reg_data & 0x08) ? "Set" : "Clear");
+        printf("      VDS Masks: CH0=%s CH1=%s CH2=%s CH3=%s\r\n",
+               (reg_data & 0x10) ? "Masked" : "Active",
+               (reg_data & 0x20) ? "Masked" : "Active",
+               (reg_data & 0x40) ? "Masked" : "Active",
+               (reg_data & 0x80) ? "Masked" : "Active");
+    } else {
+        printf("   CONFIG: READ FAILED\r\n");
+    }
+
+    // 3. Test the CSN-only GSB read (faster method)
+    printf("\r\n3. Quick GSB Test (CSN pulse method):\r\n");
+    for (int i = 0; i < 5; i++) {
+        // Just pulse CSN to get GSB without full SPI transaction
+        HAL_GPIO_WritePin(SEL_GPIO_Port, SEL_Pin, GPIO_PIN_RESET);
+        __NOP(); __NOP(); __NOP(); __NOP(); // Small delay
+        HAL_GPIO_WritePin(SEL_GPIO_Port, SEL_Pin, GPIO_PIN_SET);
+
+        // Now do a read to get the GSB
+        if (vnq_read_reg(VNQ7003_REG_CTLR, &reg_data, &gsb)) {
+            printf("   Test %d: GSB=0x%02X (bits: ", i+1, gsb);
+            for (int bit = 7; bit >= 0; bit--) {
+                printf("%d", (gsb >> bit) & 1);
+            }
+            printf(")\r\n");
+        }
+        HAL_Delay(50);
+    }
+
+    // 4. Voltage analysis
+    printf("\r\n4. Power Supply Deep Analysis:\r\n");
+    if (vnq_read_reg(VNQ7003_REG_GENSR, &reg_data, &gsb)) {
+        printf("   GENSR VCCUV flag: %s\r\n", (reg_data & 0x80) ? "UNDERVOLTAGE" : "OK");
+        printf("   GSB Global fault: %s\r\n", (gsb & 0x80) ? "FAULT PRESENT" : "OK");
+
+        if ((gsb & 0x80) && !(reg_data & 0x80)) {
+            printf("   🔍 ANALYSIS: GSB shows fault but GENSR shows VCC OK\r\n");
+            printf("      This suggests the fault is NOT VCC undervoltage!\r\n");
+            printf("      Check other status registers above for the real cause.\r\n");
+        } else if ((gsb & 0x80) && (reg_data & 0x80)) {
+            printf("   ⚠️  CONFIRMED: VCC Undervoltage is the problem!\r\n");
+            printf("      Measure VCC pin voltage - must be 8-28V\r\n");
+        }
+    }
+
+    // 5. Clear all status registers attempt
+    printf("\r\n5. Attempting to Clear Status Registers:\r\n");
+
+    // Try the clear-all-status command
+    uint8_t clear_cmd = VNQ7003_CMD_CLEAR_STATUS;  // 0xBF
+    printf("   Sending clear status command (0xBF)...\r\n");
+
+    HAL_GPIO_WritePin(SEL_GPIO_Port, SEL_Pin, GPIO_PIN_RESET);
+    HAL_SPI_Transmit(&hspi1, &clear_cmd, 1, 100);
+    HAL_GPIO_WritePin(SEL_GPIO_Port, SEL_Pin, GPIO_PIN_SET);
+
+    HAL_Delay(100);
+
+    // Check if GSB cleared
+    if (vnq_read_reg(VNQ7003_REG_CTLR, &reg_data, &gsb)) {
+        printf("   After clear: GSB=0x%02X %s\r\n", gsb,
+               (gsb & 0x80) ? "Still faulted" : "Cleared!");
+    }
+
+    printf("\r\n=== DIAGNOSTIC COMPLETE ===\r\n");
+    printf("Key findings:\r\n");
+    printf("• If GENSR bit 7 = 1: VCC voltage problem\r\n");
+    printf("• If other status registers show faults: Hardware/wiring issue\r\n");
+    printf("• If GSB clears after command: Temporary fault\r\n");
+    printf("• If nothing clears GSB bit 7: Persistent hardware problem\r\n");
+    printf("==============================\r\n\r\n");
+}
+
 /**
   * @brief GPIO Initialization Function
   * @param None
@@ -743,6 +943,14 @@ void Error_Handler(void)
   printf("CRITICAL ERROR: System halted\r\n");
   while (1)
   {
+    // Flash LED if available to indicate error
+    #ifdef LED_RED_GPIO_Port
+    HAL_GPIO_TogglePin(LED_RED_GPIO_Port, LED_RED_Pin);
+    HAL_Delay(200);
+    #else
+    // Just wait if no LED available
+    HAL_Delay(1000);
+    #endif
   }
   /* USER CODE END Error_Handler_Debug */
 }
@@ -760,6 +968,7 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line number,
      ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  printf("Assert failed: file %s on line %lu\r\n", file, line);
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
